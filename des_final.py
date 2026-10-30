@@ -1,5 +1,7 @@
-# DES Implementation Lengkap — Final Version
-# Kelompok Anti-Error — Matkul Keamanan Informasi
+# DES Implementation Lengkap — ECB + CBC
+# Kelompok 3 — Matkul Keamanan Informasi
+
+import os
 
 # ============================================
 # TABEL-TABEL DES
@@ -102,8 +104,11 @@ SBOX = [
      [2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11]]
 ]
 
+BLOCK_BYTES = 8
+BLOCK_BITS = 64
+
 # ============================================
-# A. FUNGSI UTILITAS — bits_to_hex() DIPERBAIKI
+# FUNGSI UTILITAS
 # ============================================
 
 def permute(block, table):
@@ -115,20 +120,14 @@ def xor(a, b):
     return [x ^ y for x, y in zip(a, b)]
 
 def bytes_to_bits(data: bytes) -> list:
-    """
-    Konversi bytes ke list bit.
-    Digunakan untuk plaintext dan key (UTF-8 bytes).
-    """
+    """Konversi bytes ke list bit."""
     bits = []
     for byte in data:
         bits.extend((byte >> (7 - i)) & 1 for i in range(8))
     return bits
 
 def bits_to_bytes(bits: list) -> bytes:
-    """
-    Konversi list bit ke bytes.
-    Digunakan setelah dekripsi sebelum decode ke string.
-    """
+    """Konversi list bit ke bytes."""
     result = bytearray()
     for i in range(0, len(bits), 8):
         byte = 0
@@ -138,15 +137,7 @@ def bits_to_bytes(bits: list) -> bytes:
     return bytes(result)
 
 def bits_to_hex(bits: list) -> str:
-    """
-    A. PERBAIKAN: Konversi bit ke HEX dengan panjang tetap.
-    Setiap blok 64 bit menghasilkan tepat 16 digit HEX.
-    Ciphertext dua blok → 32 digit HEX (tidak ada digit yang hilang).
-
-    Input kosong (list bit kosong) menghasilkan string kosong,
-    bukan error — supaya pemanggil tidak perlu cek panjang dulu
-    sebelum memanggil fungsi ini.
-    """
+    """Konversi bit ke HEX dengan panjang tetap (4 bit = 1 digit HEX)."""
     if not bits:
         return ""
 
@@ -162,15 +153,11 @@ def bits_to_hex(bits: list) -> str:
     return f"{value:0{hex_digits}X}"
 
 # ============================================
-# C. VALIDASI ASCII + PADDING BERBASIS BYTES
+# VALIDASI ASCII + PADDING
 # ============================================
 
 def validate_ascii(text: str, label: str = "Input") -> bytes:
-    """
-    C. Pilihan sederhana: batasi plaintext dan key pada ASCII.
-    Validasi setiap karakter dalam rentang ASCII (0-127).
-    Kembalikan bytes untuk diproses lebih lanjut.
-    """
+    """Batasi plaintext dan key pada ASCII (0-127)."""
     try:
         encoded = text.encode('ascii')
     except UnicodeEncodeError:
@@ -181,12 +168,7 @@ def validate_ascii(text: str, label: str = "Input") -> bytes:
     return encoded
 
 def validate_and_pad_key(key: str) -> bytes:
-    """
-    Validasi key: hanya ASCII, panjang 1-8 byte.
-    - Kurang dari 8 byte: padding null byte di kanan
-    - Lebih dari 8 byte: truncate + warning
-    Kembalikan bytes 8 byte siap pakai.
-    """
+    """Key ASCII; kurang dari 8 byte dipad null byte, lebih dari 8 dipotong."""
     if not key:
         raise ValueError("[!] Key tidak boleh kosong!")
 
@@ -204,14 +186,8 @@ def validate_and_pad_key(key: str) -> bytes:
 
     return key_bytes
 
-def validate_and_pad_plaintext(text: str) -> bytes:
-    """
-    Validasi plaintext: hanya ASCII.
-    Padding PKCS#7 berbasis bytes:
-    - pad_len = 8 - (len_bytes % 8), minimal 1
-    - Tambahkan pad_len byte bernilai pad_len
-    - Jika panjang tepat kelipatan 8: tambah blok padding penuh (8 byte x \\x08)
-    """
+def validate_and_pad_plaintext(text: str, verbose: bool = True) -> bytes:
+    """Plaintext ASCII + padding PKCS#7 berbasis bytes."""
     if not text:
         raise ValueError("[!] Plaintext tidak boleh kosong!")
 
@@ -220,25 +196,18 @@ def validate_and_pad_plaintext(text: str) -> bytes:
     pad_len = 8 - (len(text_bytes) % 8)
     padded = text_bytes + bytes([pad_len] * pad_len)
 
-    print(f"[+] Plaintext asli    : '{text}' ({len(text_bytes)} byte)")
-    print(f"[+] Padding PKCS#7    : {pad_len} byte (nilai: 0x{pad_len:02X})")
-    print(f"[+] Plaintext padded  : {len(padded)} byte ({len(padded)//8} blok)")
+    if verbose:
+        print(f"[+] Plaintext asli    : '{text}' ({len(text_bytes)} byte)")
+        print(f"[+] Padding PKCS#7    : {pad_len} byte (nilai: 0x{pad_len:02X})")
+        print(f"[+] Plaintext padded  : {len(padded)} byte ({len(padded)//8} blok)")
 
     return padded
 
 def remove_padding(data: bytes) -> bytes:
     """
-    Validasi dan hapus padding PKCS#7.
-
-    Sengaja dibuat strict: padding yang tidak valid memunculkan error,
-    bukan diam-diam mengembalikan data apa adanya. Kalau dibiarkan
-    permisif, ciphertext yang rusak atau key yang salah bisa terlihat
-    "berhasil" didekripsi padahal hasilnya sampah.
-
-    Catatan: ciphertext dengan key yang salah memang bisa menghasilkan
-    error padding di sini — itu wajar untuk implementasi ini, tapi
-    validasi padding BUKAN cara yang aman untuk mengautentikasi
-    ciphertext (bukan pengganti MAC/HMAC pada penggunaan nyata).
+    Validasi dan hapus padding PKCS#7 (strict).
+    Catatan: validasi padding BUKAN pengganti MAC/HMAC. Pada CBC tanpa MAC,
+    pesan error padding yang berbeda bisa dieksploitasi (padding oracle attack).
     """
     if not data or len(data) % 8 != 0:
         raise ValueError("Data hasil dekripsi tidak valid.")
@@ -254,7 +223,7 @@ def remove_padding(data: bytes) -> bytes:
     return data[:-pad_len]
 
 # ============================================
-# FUNGSI KRIPTOGRAFI DES
+# FUNGSI KRIPTOGRAFI DES (SATU BLOK)
 # ============================================
 
 def generate_subkeys(key_bytes: bytes) -> list:
@@ -270,18 +239,12 @@ def generate_subkeys(key_bytes: bytes) -> list:
         shift = SHIFT[i]
         C = C[shift:] + C[:shift]
         D = D[shift:] + D[:shift]
-        CD = C + D
-        subkey = permute(CD, PC2)
-        subkeys.append(subkey)
+        subkeys.append(permute(C + D, PC2))
 
     return subkeys
 
 def sbox_substitution(bits_48: list) -> list:
-    """
-    S-Box substitution: 48 bit → 32 bit
-    - Bit pertama & terakhir (bit 0 & 5) → baris (0-3)
-    - Bit tengah (bit 1,2,3,4) → kolom (0-15)
-    """
+    """S-Box substitution: 48 bit -> 32 bit"""
     result = []
     for i in range(8):
         chunk = bits_48[i*6:(i+1)*6]
@@ -299,10 +262,7 @@ def feistel(R: list, subkey: list) -> list:
     return permute(substituted, P)
 
 def des_encrypt_block(block_64bit: list, subkeys: list) -> list:
-    """
-    Enkripsi satu blok 64 bit.
-    Tes: input 0123456789ABCDEF → output 85E813540F0AB405
-    """
+    """Enkripsi satu blok 64 bit."""
     bits = permute(block_64bit, IP)
     L, R = bits[:32], bits[32:]
 
@@ -312,10 +272,7 @@ def des_encrypt_block(block_64bit: list, subkeys: list) -> list:
     return permute(R + L, IP_INV)
 
 def des_decrypt_block(block_64bit: list, subkeys: list) -> list:
-    """
-    Dekripsi satu blok 64 bit (subkey dibalik).
-    Tes: input 85E813540F0AB405 → output 0123456789ABCDEF
-    """
+    """Dekripsi satu blok 64 bit (subkey dibalik)."""
     bits = permute(block_64bit, IP)
     L, R = bits[:32], bits[32:]
 
@@ -325,39 +282,15 @@ def des_decrypt_block(block_64bit: list, subkeys: list) -> list:
     return permute(R + L, IP_INV)
 
 # ============================================
-# ENKRIPSI & DEKRIPSI MULTI-BLOK
+# MODE ECB
 # ============================================
 
-def des_encrypt(plaintext: str, key: str) -> list:
-    """
-    Enkripsi DES multi-blok.
-    Plaintext dan key divalidasi ASCII, padding PKCS#7 otomatis.
-    """
-    key_bytes       = validate_and_pad_key(key)
-    padded_bytes    = validate_and_pad_plaintext(plaintext)
-    subkeys         = generate_subkeys(key_bytes)
-
-    all_cipher_bits = []
-    for i in range(0, len(padded_bytes), 8):
-        block_bits  = bytes_to_bits(padded_bytes[i:i+8])
-        all_cipher_bits.extend(des_encrypt_block(block_bits, subkeys))
-
-    return all_cipher_bits
-
-def des_decrypt(cipher_bits: list, key: str) -> str:
-    """
-    Dekripsi DES multi-blok.
-    Padding PKCS#7 otomatis dihapus, hasil di-decode sebagai ASCII.
-
-    Memvalidasi sendiri bahwa jumlah bit kelipatan 64 (tidak kosong,
-    tidak ada blok setengah) — tidak bergantung pada validasi di
-    hex_to_cipher_bits(), karena des_decrypt() bisa dipanggil langsung
-    dengan cipher_bits dari sumber lain (mis. pengujian otomatis).
-    """
+def check_cipher_bits(cipher_bits: list, min_blocks: int = 1):
+    """Validasi umum ciphertext (bit) sebelum didekripsi."""
     if not cipher_bits:
         raise ValueError("Ciphertext kosong — tidak ada yang bisa didekripsi.")
 
-    if len(cipher_bits) % 64 != 0:
+    if len(cipher_bits) % BLOCK_BITS != 0:
         raise ValueError(
             f"Jumlah bit ciphertext harus kelipatan 64 "
             f"(sekarang {len(cipher_bits)} bit, blok tidak lengkap)."
@@ -366,30 +299,110 @@ def des_decrypt(cipher_bits: list, key: str) -> str:
     if any(bit not in (0, 1) for bit in cipher_bits):
         raise ValueError("Ciphertext hanya boleh berisi bit 0 atau 1.")
 
+    if len(cipher_bits) // BLOCK_BITS < min_blocks:
+        raise ValueError(
+            f"Ciphertext terlalu pendek (minimal {min_blocks} blok)."
+        )
+
+def des_encrypt(plaintext: str, key: str, verbose: bool = True) -> list:
+    """Enkripsi DES mode ECB (multi-blok, padding PKCS#7)."""
     key_bytes    = validate_and_pad_key(key)
+    padded_bytes = validate_and_pad_plaintext(plaintext, verbose)
     subkeys      = generate_subkeys(key_bytes)
 
-    all_plain_bits = []
-    for i in range(0, len(cipher_bits), 64):
-        all_plain_bits.extend(des_decrypt_block(cipher_bits[i:i+64], subkeys))
+    all_cipher_bits = []
+    for i in range(0, len(padded_bytes), BLOCK_BYTES):
+        block_bits = bytes_to_bits(padded_bytes[i:i+BLOCK_BYTES])
+        all_cipher_bits.extend(des_encrypt_block(block_bits, subkeys))
 
-    plain_bytes = bits_to_bytes(all_plain_bits)
-    plain_bytes = remove_padding(plain_bytes)
+    return all_cipher_bits
+
+def des_decrypt(cipher_bits: list, key: str) -> str:
+    """Dekripsi DES mode ECB."""
+    check_cipher_bits(cipher_bits)
+
+    key_bytes = validate_and_pad_key(key)
+    subkeys   = generate_subkeys(key_bytes)
+
+    all_plain_bits = []
+    for i in range(0, len(cipher_bits), BLOCK_BITS):
+        all_plain_bits.extend(
+            des_decrypt_block(cipher_bits[i:i+BLOCK_BITS], subkeys)
+        )
+
+    plain_bytes = remove_padding(bits_to_bytes(all_plain_bits))
     return plain_bytes.decode('ascii')
 
 # ============================================
-# B. VALIDASI CIPHERTEXT HEX SAAT DEKRIPSI
+# MODE CBC
+# ============================================
+
+def des_encrypt_cbc(plaintext: str, key: str, iv: bytes = None,
+                    verbose: bool = True) -> list:
+    """
+    Enkripsi DES mode CBC.
+
+        C[0] = E(P[0] XOR IV)
+        C[i] = E(P[i] XOR C[i-1])
+
+    - IV 8 byte acak (os.urandom) dibuat baru di setiap enkripsi.
+    - Output = IV (64 bit) + ciphertext, jadi IV ikut tersimpan.
+    - Parameter iv hanya untuk pengujian (IV tetap supaya hasil bisa
+      direproduksi). Jangan pakai IV tetap pada penggunaan nyata.
+    """
+    key_bytes    = validate_and_pad_key(key)
+    padded_bytes = validate_and_pad_plaintext(plaintext, verbose)
+    subkeys      = generate_subkeys(key_bytes)
+
+    if iv is None:
+        iv = os.urandom(BLOCK_BYTES)
+    elif len(iv) != BLOCK_BYTES:
+        raise ValueError("IV harus tepat 8 byte.")
+
+    prev = bytes_to_bits(iv)
+    output = list(prev)  # IV ditempel di depan
+
+    for i in range(0, len(padded_bytes), BLOCK_BYTES):
+        block_bits = bytes_to_bits(padded_bytes[i:i+BLOCK_BYTES])
+        cipher_block = des_encrypt_block(xor(block_bits, prev), subkeys)
+        output.extend(cipher_block)
+        prev = cipher_block
+
+    return output
+
+def des_decrypt_cbc(cipher_bits: list, key: str) -> str:
+    """
+    Dekripsi DES mode CBC.
+    Input: IV (64 bit pertama) + ciphertext.
+
+        P[0] = D(C[0]) XOR IV
+        P[i] = D(C[i]) XOR C[i-1]
+    """
+    # minimal 2 blok: 1 blok IV + 1 blok ciphertext
+    check_cipher_bits(cipher_bits, min_blocks=2)
+
+    key_bytes = validate_and_pad_key(key)
+    subkeys   = generate_subkeys(key_bytes)
+
+    prev = cipher_bits[:BLOCK_BITS]  # IV
+    body = cipher_bits[BLOCK_BITS:]
+
+    all_plain_bits = []
+    for i in range(0, len(body), BLOCK_BITS):
+        cipher_block = body[i:i+BLOCK_BITS]
+        decrypted = des_decrypt_block(cipher_block, subkeys)
+        all_plain_bits.extend(xor(decrypted, prev))
+        prev = cipher_block
+
+    plain_bytes = remove_padding(bits_to_bytes(all_plain_bits))
+    return plain_bytes.decode('ascii')
+
+# ============================================
+# VALIDASI CIPHERTEXT HEX
 # ============================================
 
 def hex_to_cipher_bits(cipher_hex: str) -> list:
-    """
-    B. Konversi HEX string ke list bit dengan validasi lengkap.
-    - Strip whitespace dan prefix 0x/0X
-    - Pastikan tidak kosong
-    - Pastikan panjang kelipatan 16 (satu blok DES = 16 digit HEX)
-    - Pastikan karakter valid HEX
-    - Konversi via bytes.fromhex() untuk akurasi
-    """
+    """Konversi HEX string ke list bit dengan validasi lengkap."""
     clean_hex = cipher_hex.strip()
 
     if clean_hex.lower().startswith("0x"):
@@ -415,38 +428,29 @@ def hex_to_cipher_bits(cipher_hex: str) -> list:
         for shift in range(7, -1, -1)
     ]
 
+def split_blocks(hex_str: str) -> list:
+    """Pecah HEX jadi blok 16 digit (untuk tampilan)."""
+    return [hex_str[i:i+16] for i in range(0, len(hex_str), 16)]
+
 # ============================================
-# TES OTOMATIS — VEKTOR STANDAR DES
+# TES OTOMATIS
 # ============================================
 
 def run_self_test():
-    """
-    Tes otomatis dengan vektor standar DES:
-    - Plaintext : 0123456789ABCDEF (sebagai bit, bukan ASCII)
-    - Key       : 133457799BBCDFF1 (sebagai bit)
-    - Expected  : 85E813540F0AB405
-    """
+    """Tes vektor standar DES + tes CBC."""
     print("\n" + "="*55)
     print("  TES OTOMATIS — VEKTOR STANDAR DES")
     print("="*55)
 
-    # Plaintext dan key sebagai hex → bytes → bits
     pt_hex  = "0123456789ABCDEF"
     key_hex = "133457799BBCDFF1"
 
-    pt_bytes  = bytes.fromhex(pt_hex)
-    key_bytes = bytes.fromhex(key_hex)
+    pt_bits = bytes_to_bits(bytes.fromhex(pt_hex))
+    subkeys = generate_subkeys(bytes.fromhex(key_hex))
 
-    pt_bits = bytes_to_bits(pt_bytes)
-
-    subkeys = generate_subkeys(key_bytes)
-
-    # Enkripsi
-    cipher_bits = des_encrypt_block(pt_bits, subkeys)
-    cipher_hex  = bits_to_hex(cipher_bits)
-
-    expected = "85E813540F0AB405"
-    enc_ok   = (cipher_hex == expected)
+    cipher_hex = bits_to_hex(des_encrypt_block(pt_bits, subkeys))
+    expected   = "85E813540F0AB405"
+    enc_ok     = (cipher_hex == expected)
 
     print(f"  Plaintext  : {pt_hex}")
     print(f"  Key        : {key_hex}")
@@ -454,38 +458,91 @@ def run_self_test():
     print(f"  Expected   : {expected}")
     print(f"  Enkripsi   : {'PASS' if enc_ok else 'FAIL'}")
 
-    # Dekripsi
-    cipher_bits2 = bytes_to_bits(bytes.fromhex(expected))
-    plain_bits   = des_decrypt_block(cipher_bits2, subkeys)
-    plain_hex    = bits_to_hex(plain_bits)
-
+    plain_hex = bits_to_hex(
+        des_decrypt_block(bytes_to_bits(bytes.fromhex(expected)), subkeys)
+    )
     dec_ok = (plain_hex == pt_hex)
     print(f"\n  Input decrypt  : {expected}")
     print(f"  Hasil decrypt  : {plain_hex}")
     print(f"  Expected       : {pt_hex}")
     print(f"  Dekripsi       : {'PASS' if dec_ok else 'FAIL'}")
 
-    if enc_ok and dec_ok:
-        print("\n  [OK] Semua tes lulus! Implementasi DES valid.")
+    # ---- Tes CBC ----
+    print("\n" + "-"*55)
+    print("  TES MODE CBC")
+    print("-"*55)
+
+    key = "rahasia1"
+    msg = "HALOHALOHALOHALO"  # blok 1 dan 2 identik
+
+    # 1. round trip
+    c1 = des_encrypt_cbc(msg, key, verbose=False)
+    rt_ok = (des_decrypt_cbc(c1, key) == msg)
+    print(f"  Round trip CBC            : {'PASS' if rt_ok else 'FAIL'}")
+
+    # 2. IV acak: dua enkripsi pesan sama harus beda
+    c2 = des_encrypt_cbc(msg, key, verbose=False)
+    iv_ok = (bits_to_hex(c1) != bits_to_hex(c2))
+    print(f"  IV acak (2 hasil beda)    : {'PASS' if iv_ok else 'FAIL'}")
+
+    # 3. blok plaintext sama -> ciphertext beda di CBC, sama di ECB
+    fixed_iv = bytes(range(8))
+    cbc_blocks = split_blocks(bits_to_hex(
+        des_encrypt_cbc(msg, key, iv=fixed_iv, verbose=False)))[1:]
+    ecb_blocks = split_blocks(bits_to_hex(
+        des_encrypt(msg, key, verbose=False)))
+    pola_ok = (ecb_blocks[0] == ecb_blocks[1]) and (cbc_blocks[0] != cbc_blocks[1])
+    print(f"  ECB bocor pola, CBC tidak : {'PASS' if pola_ok else 'FAIL'}")
+
+    # 4. key salah harus gagal / hasil beda
+    try:
+        wrong = des_decrypt_cbc(c1, "salahkey")
+        wk_ok = (wrong != msg)
+    except ValueError:
+        wk_ok = True
+    print(f"  Key salah ditolak         : {'PASS' if wk_ok else 'FAIL'}")
+
+    all_ok = enc_ok and dec_ok and rt_ok and iv_ok and pola_ok and wk_ok
+    if all_ok:
+        print("\n  [OK] Semua tes lulus! Implementasi DES (ECB + CBC) valid.")
     else:
         print("\n  [FAIL] Ada tes yang gagal — periksa implementasi.")
 
     print("="*55)
 
 # ============================================
-# TAMPILKAN DETAIL 16 ROUND
+# DEMO: ECB vs CBC
+# ============================================
+
+def demo_ecb_vs_cbc(key: str):
+    """Tampilkan perbedaan pola ciphertext ECB dan CBC."""
+    msg = "HALOHALOHALOHALO"  # 2 blok identik + 1 blok padding
+
+    print(f"\n  Plaintext : '{msg}' (blok 1 dan 2 sama persis)")
+    print(f"  Key       : '{key}'")
+
+    ecb = split_blocks(bits_to_hex(des_encrypt(msg, key, verbose=False)))
+    print("\n  [ECB] — blok sama -> ciphertext sama (pola bocor):")
+    for i, b in enumerate(ecb, 1):
+        print(f"    C{i} = {b}")
+
+    cbc = split_blocks(bits_to_hex(des_encrypt_cbc(msg, key, verbose=False)))
+    print("\n  [CBC] — blok sama -> ciphertext beda (pola tersembunyi):")
+    print(f"    IV = {cbc[0]}")
+    for i, b in enumerate(cbc[1:], 1):
+        print(f"    C{i} = {b}")
+
+    print("\n  Jalankan lagi: ECB selalu sama, CBC berubah karena IV acak.")
+
+# ============================================
+# DETAIL 16 ROUND (blok pertama, tanpa CBC)
 # ============================================
 
 def show_round_detail(plaintext: str, key: str):
-    """
-    Tampilkan nilai L dan R setiap round.
-    Menggunakan padding PKCS#7 yang sama dengan des_encrypt(),
-    bukan ljust(8) dengan spasi — supaya blok pertama yang ditampilkan
-    di sini identik dengan blok pertama yang benar-benar dienkripsi.
-    """
+    """Tampilkan nilai L dan R setiap round untuk blok pertama (mode ECB)."""
     key_bytes    = validate_and_pad_key(key)
-    padded_bytes = validate_and_pad_plaintext(plaintext)
-    pt_bytes     = padded_bytes[:8]  # blok pertama saja untuk demo round
+    padded_bytes = validate_and_pad_plaintext(plaintext, verbose=False)
+    pt_bytes     = padded_bytes[:8]
 
     subkeys = generate_subkeys(key_bytes)
     bits    = permute(bytes_to_bits(pt_bytes), IP)
@@ -506,47 +563,73 @@ def show_round_detail(plaintext: str, key: str):
 # MENU UTAMA
 # ============================================
 
+def pilih_mode() -> str:
+    """Minta user memilih mode. Kembalikan 'ECB' atau 'CBC'."""
+    while True:
+        m = input("Pilih mode [1] ECB  [2] CBC (disarankan): ").strip()
+        if m == "1":
+            return "ECB"
+        if m == "2":
+            return "CBC"
+        print("[!] Pilihan mode tidak valid!")
+
 if __name__ == "__main__":
     print("=" * 55)
-    print("  DES ENCRYPTION — Kelompok Anti-Error")
+    print("  DES ENCRYPTION (ECB + CBC) — Kelompok 3")
     print("  Matkul Keamanan Informasi")
     print("=" * 55)
 
-    # Jalankan tes otomatis saat startup
     run_self_test()
 
     while True:
         print("\n[1] Enkripsi")
         print("[2] Dekripsi")
-        print("[3] Demo enkripsi + detail round")
+        print("[3] Demo enkripsi + detail round (ECB)")
         print("[4] Jalankan tes otomatis ulang")
+        print("[5] Demo perbandingan ECB vs CBC")
         print("[0] Keluar")
 
         choice = input("\nPilihan: ").strip()
 
         if choice == "1":
+            mode      = pilih_mode()
             plaintext = input("\nMasukkan plaintext (ASCII): ")
             key       = input("Masukkan key (maks 8 karakter ASCII): ")
 
             print("\n" + "-"*55)
             try:
-                cipher_bits = des_encrypt(plaintext, key)
-                cipher_hex  = bits_to_hex(cipher_bits)
-                print(f"\n[+] KEY            : '{key}'")
-                print(f"[+] CIPHERTEXT HEX : {cipher_hex}")
+                if mode == "CBC":
+                    cipher_bits = des_encrypt_cbc(plaintext, key)
+                else:
+                    cipher_bits = des_encrypt(plaintext, key)
+                cipher_hex = bits_to_hex(cipher_bits)
+                print(f"\n[+] MODE           : {mode}")
+                print(f"[+] KEY            : '{key}'")
+                if mode == "CBC":
+                    print(f"[+] IV (HEX)       : {cipher_hex[:16]}")
+                    print(f"[+] CIPHERTEXT HEX : {cipher_hex}  (IV + ciphertext)")
+                else:
+                    print(f"[+] CIPHERTEXT HEX : {cipher_hex}")
                 print(f"[+] CIPHERTEXT BITS: {len(cipher_bits)} bit")
             except ValueError as e:
                 print(f"[!] Error: {e}")
 
         elif choice == "2":
+            mode       = pilih_mode()
             cipher_hex = input("\nMasukkan ciphertext (HEX, tanpa spasi): ")
+            if mode == "CBC":
+                print("    (untuk CBC, 16 digit HEX pertama adalah IV)")
             key        = input("Masukkan key: ")
 
             print("\n" + "-"*55)
             try:
                 cipher_bits = hex_to_cipher_bits(cipher_hex)
-                decrypted   = des_decrypt(cipher_bits, key)
-                print(f"\n[+] KEY       : '{key}'")
+                if mode == "CBC":
+                    decrypted = des_decrypt_cbc(cipher_bits, key)
+                else:
+                    decrypted = des_decrypt(cipher_bits, key)
+                print(f"\n[+] MODE      : {mode}")
+                print(f"[+] KEY       : '{key}'")
                 print(f"[+] DECRYPTED : '{decrypted}'")
             except ValueError as e:
                 print(f"[!] Error: {e}")
@@ -567,15 +650,20 @@ if __name__ == "__main__":
 
                 decrypted = des_decrypt(cipher_bits, key)
                 print(f"\n[+] DECRYPTED      : '{decrypted}'")
-                # Perbandingan exact — spasi di awal/akhir harus ikut cocok,
-                # bukan diabaikan lewat strip(), supaya tes benar-benar
-                # memastikan teks identik byte per byte.
                 print(f"[+] MATCH          : {plaintext == decrypted}")
             except ValueError as e:
                 print(f"[!] Error: {e}")
 
         elif choice == "4":
             run_self_test()
+
+        elif choice == "5":
+            key = input("\nMasukkan key (maks 8 karakter ASCII): ")
+            print("\n" + "-"*55)
+            try:
+                demo_ecb_vs_cbc(key)
+            except ValueError as e:
+                print(f"[!] Error: {e}")
 
         elif choice == "0":
             print("\n[+] Keluar. Terima kasih!")
